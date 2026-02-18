@@ -180,6 +180,11 @@ app_license = "mit"
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "loan_customizations.event.get_events"
 # }
+
+override_doctype_class = {
+    "Loan Repayment Schedule": "loan_customizations.overrides.loan_repayment_schedule_override.CustomLoanRepaymentSchedule",
+}
+
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,

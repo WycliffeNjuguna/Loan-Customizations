@@ -185,6 +185,21 @@ override_doctype_class = {
     "Loan Repayment Schedule": "loan_customizations.overrides.loan_repayment_schedule_override.CustomLoanRepaymentSchedule",
 }
 
+# Document Events — validation hooks for Loan and Loan Product
+doc_events = {
+    "Loan": {
+        "validate": "loan_customizations.overrides.loan_validation.validate_loan_calculation_method",
+    },
+    "Loan Product": {
+        "validate": "loan_customizations.overrides.loan_validation.validate_loan_product_calculation_method",
+    },
+}
+
+# Extension point: register a custom schedule method handler if you need a
+# method not in the built-in SCHEDULE_METHODS registry.
+# Signature: fn(schedule_doc, method_name) -> None
+# override_loan_schedule_method = "your_app.your_module.custom_schedule_handler"
+
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
@@ -254,4 +269,3 @@ override_doctype_class = {
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

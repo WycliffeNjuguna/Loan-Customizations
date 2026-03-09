@@ -1,104 +1,106 @@
+"""
+Custom Loan Repayment Schedule Override
+========================================
+Intercepts make_repayment_schedule() on the LoanRepaymentSchedule doctype
+and delegates to the appropriate calculation method based on the loan product's
+custom_loan_calculation_method field.
+
+Architecture:
+  - This file contains only routing/dispatch logic.
+  - Actual calculation methods live in schedule_methods.py.
+  - To add a new method: register it in schedule_methods.SCHEDULE_METHODS dict.
+
+Trigger Conditions:
+  - custom_loan_calculation_method is set on the Loan Repayment Schedule
+    (fetched from Loan -> Loan Product)
+  - repayment_method == "Repay Over Number of Periods"
+  - repayment_periods > 0
+
+Fallback:
+  - If no custom_loan_calculation_method is set, or the method is not found
+    in the registry, the standard ERPNext reducing-balance logic runs unchanged.
+  - A client-side override hook (override_loan_schedule_method in hooks.py)
+    can handle methods outside the built-in registry.
+"""
+
 import frappe
 from frappe import _
-from frappe.utils import add_months, getdate, flt
-from lending.loan_management.doctype.loan_repayment_schedule.loan_repayment_schedule import LoanRepaymentSchedule
+from frappe.utils import flt
+from lending.loan_management.doctype.loan_repayment_schedule.loan_repayment_schedule import (
+    LoanRepaymentSchedule,
+)
+
+from loan_customizations.overrides.schedule_methods import SCHEDULE_METHODS
 
 
 class CustomLoanRepaymentSchedule(LoanRepaymentSchedule):
     """
-    Custom override for ERPNext Lending — Equal Principal + Monthly Rate schedule.
+    Extended LoanRepaymentSchedule with multi-method calculation support.
 
-    TRIGGER CONDITIONS (both must be true):
-        1. repayment_method == "Repay Over Number of Periods"
-        2. custom_monthly_interest_rate_ field is set and > 0
-
-    FORMULA:
-        Fixed Principal  = Loan Amount / N                          (same every month)
-        Interest(i)      = Outstanding Balance(i) × monthly_rate%  (declines each month)
-        EMI(i)           = Fixed Principal + Interest(i)            (declines each month)
-
-    FALLBACK:
-        If custom_monthly_interest_rate_ is blank or zero, the standard ERPNext
-        annual-rate amortisation logic runs completely unchanged.
-
-    CUSTOM FIELD REQUIRED:
-        Add 'custom_monthly_interest_rate_' (Float) to:
-          - Loan Product  (user sets it here)
-          - Loan          (fetch_from: loan_product.custom_monthly_interest_rate_)
-          - Loan Repayment Schedule  (fetch_from: loan.custom_monthly_interest_rate_)
-
-        See custom_fields/setup_custom_fields.py to create these automatically.
+    Custom fields required on Loan Repayment Schedule (fetched from Loan):
+        - custom_loan_calculation_method       (Data, fetched from Loan)
+        - custom_monthly_interest_rate_        (Percent, fetched from Loan)
+        - custom_arrears_carry_forward_scope   (Data, fetched from Loan)
     """
 
     def make_repayment_schedule(self):
-        if self._use_custom_schedule():
-            self._make_equal_principal_schedule()
-        else:
+        method = self._get_calculation_method()
+
+        if not method:
+            # No custom method set — use standard ERPNext logic
             super().make_repayment_schedule()
+            return
 
-    # ------------------------------------------------------------------ #
-    #  Internal helpers                                                    #
-    # ------------------------------------------------------------------ #
+        # Look up in built-in registry first
+        handler = SCHEDULE_METHODS.get(method)
 
-    def _use_custom_schedule(self):
-        """Returns True only when BOTH conditions are met."""
-        return (
-            self.repayment_method == "Repay Over Number of Periods"
-            and self.repayment_periods
-            and self.repayment_periods > 0
-            and flt(getattr(self, "custom_monthly_interest_rate_", 0)) > 0
-        )
+        if handler:
+            handler(self)
+            return
 
-    def _make_equal_principal_schedule(self):
-        """
-        Builds a fixed-principal, declining-interest repayment schedule.
+        # Not in registry — check for a client-provided override hook
+        client_hook = frappe.get_hooks("override_loan_schedule_method")
+        if client_hook:
+            frappe.get_attr(client_hook[-1])(self, method)
+            return
 
-        Each row:
-            principal_amount    = fixed (Loan Amount / N)
-            interest_amount     = outstanding × monthly_rate / 100
-            total_payment       = principal + interest   ← decreases each month
-            balance_loan_amount = outstanding after principal deduction
-        """
-        if not self.repayment_start_date:
-            frappe.throw(_("Repayment Start Date is mandatory for term loans"))
-
-        self.repayment_schedule = []
-
-        loan_amount     = flt(self.loan_amount)
-        periods         = int(self.repayment_periods)
-        monthly_rate    = flt(self.custom_monthly_interest_rate_) / 100.0
-
-        fixed_principal = flt(loan_amount / periods, 2)
-        outstanding     = loan_amount
-        payment_date    = getdate(self.repayment_start_date)
-
-        for i in range(periods):
-            # Last instalment absorbs any rounding residual so balance hits exactly 0
-            if i == periods - 1:
-                principal_amount = flt(outstanding, 2)
-            else:
-                principal_amount = fixed_principal
-
-            interest_amount = flt(outstanding * monthly_rate, 2)
-            total_payment   = flt(principal_amount + interest_amount, 2)
-            balance_after   = flt(outstanding - principal_amount, 2)
-
-            self.append("repayment_schedule", {
-                "payment_date":        payment_date,
-                "principal_amount":    principal_amount,
-                "interest_amount":     interest_amount,
-                "total_payment":       total_payment,
-                "balance_loan_amount": balance_after,
-            })
-
-            outstanding  = balance_after
-            payment_date = add_months(payment_date, 1)
-
+        # Method specified but not found anywhere — warn and fall back
         frappe.msgprint(
             _(
-                "Schedule: <b>Equal Principal + Monthly Rate ({0}%)</b>. "
-                "EMI reduces each period as interest declines on the outstanding balance."
-            ).format(flt(self.custom_monthly_interest_rate_, 4)),
-            indicator="blue",
-            alert=True,
+                "Loan calculation method <b>{0}</b> is not registered. "
+                "Falling back to standard ERPNext schedule. "
+                "Please register a handler in SCHEDULE_METHODS or via the "
+                "override_loan_schedule_method hook."
+            ).format(method),
+            indicator="orange",
+            title=_("Unknown Calculation Method"),
         )
+        super().make_repayment_schedule()
+
+    # ── Helpers ──────────────────────────────────────────────────────────── #
+
+    def _get_calculation_method(self):
+        """
+        Return the calculation method string, or None to use standard ERPNext path.
+
+        Priority:
+          1. custom_loan_calculation_method field (fetched from Loan Product)
+          2. Legacy fallback: if no method field but custom_monthly_interest_rate_
+             is set, treat as Equal Principal Installments (backward compat with
+             the original override behaviour before this field was added).
+        """
+        method = (getattr(self, "custom_loan_calculation_method", "") or "").strip()
+        if method:
+            return method
+
+        # Legacy path: before the method field existed, any loan with a monthly
+        # rate set and "Repay Over Number of Periods" used Equal Principal
+        if (
+            self.repayment_method == "Repay Over Number of Periods"
+            and self.repayment_periods
+            and int(self.repayment_periods) > 0
+            and flt(getattr(self, "custom_monthly_interest_rate_", 0)) > 0
+        ):
+            return "Equal Principal Installments"
+
+        return None

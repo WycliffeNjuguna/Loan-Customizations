@@ -1,0 +1,58 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-03-23 09:08:37.168998",
+ "description": "Child table defining balance-based repayment brackets for graduated repayment loans. Each row maps a balance range to a fixed monthly deduction amount.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "balance_from",
+  "balance_to",
+  "monthly_deduction"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "description": "Lower bound of balance range (inclusive)",
+   "fieldname": "balance_from",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Balance From",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "description": "Upper bound of balance range (inclusive)",
+   "fieldname": "balance_to",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Balance To",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "description": "Fixed monthly deduction for this balance bracket",
+   "fieldname": "monthly_deduction",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Monthly Deduction",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-03-23 11:36:07.552024",
+ "modified_by": "Administrator",
+ "module": "Loan Customizations",
+ "name": "Graduated Repayment Slab",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -13,8 +13,6 @@ Architecture:
 Trigger Conditions:
   - custom_loan_calculation_method is set on the Loan Repayment Schedule
     (fetched from Loan -> Loan Product)
-  - repayment_method == "Repay Over Number of Periods"
-  - repayment_periods > 0
 
 Fallback:
   - If no custom_loan_calculation_method is set, or the method is not found
@@ -81,20 +79,21 @@ class CustomLoanRepaymentSchedule(LoanRepaymentSchedule):
 
     def _get_calculation_method(self):
         """
-        Return the calculation method string, or None to use standard ERPNext path.
+        Return the calculation method string, or None if we should use the
+        standard ERPNext path.
 
         Priority:
-          1. custom_loan_calculation_method field (fetched from Loan Product)
+          1. custom_loan_calculation_method field (set on Loan, fetched from
+             Loan Product via custom fields)
           2. Legacy fallback: if no method field but custom_monthly_interest_rate_
-             is set, treat as Equal Principal Installments (backward compat with
-             the original override behaviour before this field was added).
+             is set, treat as Equal Principal Installments (backward compat
+             with the original override behaviour).
         """
         method = (getattr(self, "custom_loan_calculation_method", "") or "").strip()
         if method:
             return method
 
-        # Legacy path: before the method field existed, any loan with a monthly
-        # rate set and "Repay Over Number of Periods" used Equal Principal
+        # Legacy path: app only had Equal Principal before the method field
         if (
             self.repayment_method == "Repay Over Number of Periods"
             and self.repayment_periods

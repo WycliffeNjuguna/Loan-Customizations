@@ -44,6 +44,12 @@ app_license = "mit"
 
 # include js in doctype views
 # doctype_js = {"doctype" : "public/js/doctype.js"}
+
+doctype_js = {
+    "Loan": "public/js/loan.js",
+    "Loan Product": "public/js/loan_product.js",
+}
+
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -188,10 +194,10 @@ override_doctype_class = {
 # Document Events — validation hooks for Loan and Loan Product
 doc_events = {
     "Loan": {
-        "validate": "loan_customizations.overrides.loan_validation.validate_loan_calculation_method",
+        "validate": "loan_customizations.overrides.loan_validation.validate_loan",
     },
-    "Loan Product": {
-        "validate": "loan_customizations.overrides.loan_validation.validate_loan_product_calculation_method",
+    "Loan Repayment Schedule": {
+        "validate": "loan_customizations.overrides.loan_validation.validate_loan_repayment_schedule",
     },
 }
 

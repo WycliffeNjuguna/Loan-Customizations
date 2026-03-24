@@ -75,9 +75,9 @@ def _add_broken_period_row(doc, schedule_rows):
         return
 
     method = getattr(doc, "custom_loan_calculation_method", "") or ""
-    if method == "Zero Interest":
+    if method in ("Zero Interest", "Graduated Repayment", "Edu Loans"):
         frappe.msgprint(
-            _("Broken Period Interest suppressed: Zero Interest loan product."),
+            _("Broken Period Interest suppressed: {0} loan product.").format(method),
             indicator="orange",
             alert=True,
         )
@@ -331,24 +331,174 @@ def generate_zero_interest(doc):
 # Method 5: Graduated Repayment (Edu Loans)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_graduated_slabs(loan_product_name):
+    """
+    Fetch the graduated repayment slabs from the Loan Product's child table.
+    Returns a list of dicts sorted by balance_from descending (highest slab first).
+
+    Each slab: { balance_from, balance_to, monthly_deduction }
+    """
+    if not loan_product_name:
+        return []
+
+    slabs = frappe.get_all(
+        "Graduated Repayment Slab",
+        filters={"parent": loan_product_name, "parenttype": "Loan Product"},
+        fields=["balance_from", "balance_to", "monthly_deduction"],
+        order_by="balance_from desc",
+    )
+
+    return slabs
+
+
+def _get_slab_deduction(balance, slabs):
+    """
+    Given the current outstanding balance, find the matching slab and return
+    the monthly deduction amount.
+
+    Slabs are checked from highest to lowest. The first slab where
+    balance_from <= balance <= balance_to is used.
+
+    If no slab matches (shouldn't happen with proper configuration),
+    returns the deduction from the lowest slab as fallback.
+    """
+    for slab in slabs:
+        if flt(slab.balance_from) <= flt(balance) <= flt(slab.balance_to):
+            return flt(slab.monthly_deduction)
+
+    # Fallback: if balance is above all slabs, use the highest slab
+    if slabs and flt(balance) > flt(slabs[0].balance_to):
+        return flt(slabs[0].monthly_deduction)
+
+    # Fallback: if balance is below all slabs, use the lowest slab
+    if slabs:
+        return flt(slabs[-1].monthly_deduction)
+
+    return 0.0
+
+
 def generate_graduated_repayment(doc):
     """
-    Graduated Repayment for education loans.
+    Graduated Repayment for education loans (slab-based).
 
-    This is essentially a zero-interest or near-zero-interest loan where the
-    repayment structure may follow graduated slabs. For now, it uses the
-    reducing balance formula (same as standard ERPNext) so that if a tiny
-    rate is set (e.g. 0.001%), it calculates correctly.
+    How it works:
+      1. Reads the graduated repayment slabs from the Loan Product
+      2. Each month, looks up the current outstanding balance in the slab table
+      3. Applies the slab's monthly_deduction as the payment for that period
+      4. As the balance decreases, it falls into lower slabs with smaller deductions
+      5. The last period pays off whatever remains
 
-    If the rate is effectively zero, it falls back to zero-interest.
+    This is a ZERO-INTEREST method — no interest is charged.
+    The number of periods is determined dynamically by the slabs, NOT by the
+    repayment_periods field. repayment_periods is updated after generation
+    to reflect the actual number of periods produced.
+
+    Example for KES 30,000 loan with slabs:
+      25,001-30,000 → 2,000/month
+      20,001-25,000 → 1,750/month
+      15,001-20,000 → 1,500/month
+      ...and so on, decreasing as balance drops.
     """
-    loan_amount, periods, monthly_rate, start_date = _base_params(doc)
+    if not doc.repayment_start_date:
+        frappe.throw(_("Repayment Start Date is mandatory for term loans."))
 
-    if monthly_rate <= 0.0000001:
-        return _generate_zero_interest_core(doc)
+    loan_amount = flt(doc.loan_amount)
+    if loan_amount <= 0:
+        frappe.throw(_("Loan Amount must be greater than zero."))
 
-    # Use reducing balance for small rates
-    return generate_emi_reducing_balance(doc)
+    start_date = getdate(doc.repayment_start_date)
+
+    # Get the loan product name — it might be on the schedule doc or we
+    # need to look it up from the linked Loan
+    loan_product = getattr(doc, "loan_product", "") or ""
+    if not loan_product and getattr(doc, "loan", ""):
+        loan_product = frappe.db.get_value("Loan", doc.loan, "loan_product") or ""
+
+    if not loan_product:
+        frappe.throw(
+            _("Cannot generate graduated repayment schedule: no Loan Product found. "
+              "Please ensure the Loan has a Loan Product set.")
+        )
+
+    # Fetch slabs
+    slabs = _get_graduated_slabs(loan_product)
+
+    if not slabs:
+        frappe.throw(
+            _("Loan Product <b>{0}</b> has no Graduated Repayment Slabs defined. "
+              "Please add slabs in the Loan Product before creating this loan.").format(loan_product)
+        )
+
+    # Build the schedule by walking through the slabs
+    balance = loan_amount
+    rows = []
+    max_periods = 120  # Safety limit: 10 years max
+
+    period = 0
+    while balance > 0 and period < max_periods:
+        payment_date = add_months(start_date, period)
+        deduction = _get_slab_deduction(balance, slabs)
+
+        if deduction <= 0:
+            frappe.throw(
+                _("Graduated Repayment: slab returned zero deduction for balance {0}. "
+                  "Check slab configuration on Loan Product {1}.").format(
+                    frappe.format_value(balance, {"fieldtype": "Currency"}),
+                    loan_product,
+                )
+            )
+
+        # Last period: pay off the remaining balance
+        if balance <= deduction:
+            principal = flt(balance, 2)
+        else:
+            principal = flt(deduction, 2)
+
+        balance = flt(balance - principal, 2)
+
+        rows.append({
+            "payment_date": payment_date,
+            "principal_amount": principal,
+            "interest_amount": 0.0,
+            "total_payment": principal,
+            "balance_loan_amount": max(balance, 0.0),
+        })
+
+        period += 1
+
+    if balance > 0:
+        frappe.msgprint(
+            _("Warning: graduated repayment schedule hit the {0}-period safety limit "
+              "with {1} still outstanding. Check slab configuration.").format(
+                max_periods,
+                frappe.format_value(balance, {"fieldtype": "Currency"}),
+            ),
+            indicator="red",
+            alert=True,
+        )
+
+    _build_schedule(doc, rows)
+
+    # Update summary fields
+    actual_periods = len(rows)
+    first_deduction = rows[0]["total_payment"] if rows else 0
+
+    doc.repayment_periods = actual_periods
+    doc.monthly_repayment_amount = first_deduction
+    doc.total_interest_payable = 0.0
+    doc.total_payment = loan_amount
+
+    frappe.msgprint(
+        _("Graduated Repayment schedule generated: {0} periods from slabs on <b>{1}</b>. "
+          "First payment: {2}, final payment: {3}.").format(
+            actual_periods,
+            loan_product,
+            frappe.format_value(first_deduction, {"fieldtype": "Currency"}),
+            frappe.format_value(rows[-1]["total_payment"] if rows else 0, {"fieldtype": "Currency"}),
+        ),
+        indicator="green",
+        alert=True,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

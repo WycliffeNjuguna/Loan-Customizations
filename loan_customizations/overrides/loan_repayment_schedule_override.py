@@ -41,12 +41,13 @@ class CustomLoanRepaymentSchedule(LoanRepaymentSchedule):
         - custom_arrears_carry_forward_scope   (Data, fetched from Loan)
     """
 
-    def make_repayment_schedule(self):
+    def make_repayment_schedule(self, *args, **kwargs):
+        self._sync_custom_fields_from_loan()
         method = self._get_calculation_method()
 
         if not method:
             # No custom method set — use standard ERPNext logic
-            super().make_repayment_schedule()
+            super().make_repayment_schedule(*args, **kwargs)
             return
 
         # Look up in built-in registry first
@@ -73,9 +74,42 @@ class CustomLoanRepaymentSchedule(LoanRepaymentSchedule):
             indicator="orange",
             title=_("Unknown Calculation Method"),
         )
-        super().make_repayment_schedule()
+        super().make_repayment_schedule(*args, **kwargs)
 
     # ── Helpers ──────────────────────────────────────────────────────────── #
+
+    def _sync_custom_fields_from_loan(self):
+        """
+        Explicitly fetch custom fields from the linked Loan document.
+
+        fetch_from is a client-side (browser) mechanism only — it does NOT run
+        during server-side validation. Without this, custom_monthly_interest_rate_
+        and custom_loan_calculation_method are always 0/blank server-side, which
+        causes every schedule method to produce zero interest.
+        """
+        if not self.loan:
+            return
+
+        loan_fields = frappe.db.get_value(
+            "Loan",
+            self.loan,
+            [
+                "custom_loan_calculation_method",
+                "custom_monthly_interest_rate_",
+                "custom_arrears_carry_forward_scope",
+            ],
+            as_dict=True,
+        )
+
+        if not loan_fields:
+            return
+
+        if loan_fields.custom_loan_calculation_method is not None:
+            self.custom_loan_calculation_method = loan_fields.custom_loan_calculation_method
+        if loan_fields.custom_monthly_interest_rate_ is not None:
+            self.custom_monthly_interest_rate_ = loan_fields.custom_monthly_interest_rate_
+        if loan_fields.custom_arrears_carry_forward_scope is not None:
+            self.custom_arrears_carry_forward_scope = loan_fields.custom_arrears_carry_forward_scope
 
     def _get_calculation_method(self):
         """

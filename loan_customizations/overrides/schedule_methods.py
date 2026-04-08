@@ -351,26 +351,26 @@ def _get_graduated_slabs(loan_product_name):
     return slabs
 
 
-def _get_slab_deduction(balance, slabs):
+def _get_slab_deduction(amount, slabs):
     """
-    Given the current outstanding balance, find the matching slab and return
-    the monthly deduction amount.
+    Given an amount (typically the original loan amount), find the matching
+    slab and return the monthly deduction amount.
 
     Slabs are checked from highest to lowest. The first slab where
-    balance_from <= balance <= balance_to is used.
+    balance_from <= amount <= balance_to is used.
 
     If no slab matches (shouldn't happen with proper configuration),
     returns the deduction from the lowest slab as fallback.
     """
     for slab in slabs:
-        if flt(slab.balance_from) <= flt(balance) <= flt(slab.balance_to):
+        if flt(slab.balance_from) <= flt(amount) <= flt(slab.balance_to):
             return flt(slab.monthly_deduction)
 
-    # Fallback: if balance is above all slabs, use the highest slab
-    if slabs and flt(balance) > flt(slabs[0].balance_to):
+    # Fallback: if amount is above all slabs, use the highest slab
+    if slabs and flt(amount) > flt(slabs[0].balance_to):
         return flt(slabs[0].monthly_deduction)
 
-    # Fallback: if balance is below all slabs, use the lowest slab
+    # Fallback: if amount is below all slabs, use the lowest slab
     if slabs:
         return flt(slabs[-1].monthly_deduction)
 
@@ -383,21 +383,25 @@ def generate_graduated_repayment(doc):
 
     How it works:
       1. Reads the graduated repayment slabs from the Loan Product
-      2. Each month, looks up the current outstanding balance in the slab table
-      3. Applies the slab's monthly_deduction as the payment for that period
-      4. As the balance decreases, it falls into lower slabs with smaller deductions
-      5. The last period pays off whatever remains
+      2. Looks up the ORIGINAL LOAN AMOUNT in the slab table to determine
+         a fixed monthly deduction for the entire repayment period
+      3. Applies the same deduction every period until the loan is paid off
+      4. The last period pays off whatever remains
 
     This is a ZERO-INTEREST method — no interest is charged.
-    The number of periods is determined dynamically by the slabs, NOT by the
-    repayment_periods field. repayment_periods is updated after generation
-    to reflect the actual number of periods produced.
+    The number of periods is determined dynamically by the slab deduction
+    and loan amount, NOT by the repayment_periods field. repayment_periods
+    is updated after generation to reflect the actual number of periods
+    produced.
 
     Example for KES 30,000 loan with slabs:
       25,001-30,000 → 2,000/month
       20,001-25,000 → 1,750/month
       15,001-20,000 → 1,500/month
-      ...and so on, decreasing as balance drops.
+      ...
+    A KES 30,000 loan falls in the 25,001-30,000 slab, so the borrower
+    pays 2,000/month for 15 months (14 × 2,000 + 1 × 2,000 remainder).
+    The deduction does NOT step down as the balance decreases.
     """
     if not doc.repayment_start_date:
         frappe.throw(_("Repayment Start Date is mandatory for term loans."))
@@ -429,7 +433,19 @@ def generate_graduated_repayment(doc):
               "Please add slabs in the Loan Product before creating this loan.").format(loan_product)
         )
 
-    # Build the schedule by walking through the slabs
+    # Determine the fixed monthly deduction based on the ORIGINAL loan amount
+    deduction = _get_slab_deduction(loan_amount, slabs)
+
+    if deduction <= 0:
+        frappe.throw(
+            _("Graduated Repayment: slab returned zero deduction for loan amount {0}. "
+              "Check slab configuration on Loan Product {1}.").format(
+                frappe.format_value(loan_amount, {"fieldtype": "Currency"}),
+                loan_product,
+            )
+        )
+
+    # Build the schedule with a fixed deduction every period
     balance = loan_amount
     rows = []
     max_periods = 120  # Safety limit: 10 years max
@@ -437,16 +453,6 @@ def generate_graduated_repayment(doc):
     period = 0
     while balance > 0 and period < max_periods:
         payment_date = add_months(start_date, period)
-        deduction = _get_slab_deduction(balance, slabs)
-
-        if deduction <= 0:
-            frappe.throw(
-                _("Graduated Repayment: slab returned zero deduction for balance {0}. "
-                  "Check slab configuration on Loan Product {1}.").format(
-                    frappe.format_value(balance, {"fieldtype": "Currency"}),
-                    loan_product,
-                )
-            )
 
         # Last period: pay off the remaining balance
         if balance <= deduction:
@@ -490,10 +496,11 @@ def generate_graduated_repayment(doc):
 
     frappe.msgprint(
         _("Graduated Repayment schedule generated: {0} periods from slabs on <b>{1}</b>. "
-          "First payment: {2}, final payment: {3}.").format(
+          "Fixed monthly deduction: {2} (based on loan amount slab). "
+          "Final payment: {3}.").format(
             actual_periods,
             loan_product,
-            frappe.format_value(first_deduction, {"fieldtype": "Currency"}),
+            frappe.format_value(deduction, {"fieldtype": "Currency"}),
             frappe.format_value(rows[-1]["total_payment"] if rows else 0, {"fieldtype": "Currency"}),
         ),
         indicator="green",
